@@ -1,0 +1,124 @@
+<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MinIO запустився. Бекап ще не починався. — ops.notes</title><meta name="description" content="Що таке S3-сховище, як підняти MinIO під systemd, обмежити доступ до bucket і перевірити відновлення. З окремим поясненням, чому зелений health check ще не зберіг твої дані."><link rel="stylesheet" href="/style.css"></head><body><a class="skip" href="#main">До змісту</a><header><a class="brand" href="/">ops<span>!</span>notes</a><span class="tagline">Ви вчіться.<br>Я поки поясню, чому так і задумав.</span><nav aria-label="Головна навігація"><a href="/#notes">Розбори <sup>16</sup></a><a href="/about.html">Правила прожарки ↗</a></nav><span class="issue">ВИПУСК 01 / UA</span></header><main id="main" class="article-page"><div class="breadcrumb"><a href="/#notes">← До колекції граблів</a><span>РОЗБІР 16 / HOMELAB</span></div><div class="article-opening" id="top"><div class="case-number">16<span>ТЕХНІЧНИЙ<br>РОЗБІР</span></div><div><p class="eyebrow">Homelab / РОБОТА НАД ПОМИЛКАМИ</p><h1>MinIO запустився. Бекап ще не починався.</h1><p class="standfirst">Що таке S3-сховище, як підняти MinIO під systemd, обмежити доступ до bucket і перевірити відновлення. З окремим поясненням, чому зелений health check ще не зберіг твої дані.</p><a class="practical-jump" href="#practical">До команд і перевірок ↓</a></div></div><div class="article-body"><aside class="toc"><span class="eyebrow">ПЛАН РОЗБОРУ</span><a href="#section-1">Що будуємо й навіщо</a><a href="#section-2">Спочатку стан самого MinIO</a><a href="#section-3">Як усе з’єднано</a><a href="#practical">Тепер корисне: розгортання на Debian</a><a href="#section-4">Як користуватися: bucket і окремий backup-користувач</a><a href="#section-5">Конфігурація сервера</a><a href="#section-6">Якщо не працює</a><a href="#section-7">Зміна, перевірка й повернення</a><blockquote>«Файл завантажився. Значить, бекапи є.»</blockquote></aside><article class="prose"><h2 id="section-1"><span>01</span>Що будуємо й навіщо</h2><h3>Дано</h3><p>Є Debian-хост, окремо змонтований диск і застосунок або backup job, якому потрібний S3 API. MinIO приймає об’єкти: вміст файла, його ключ та metadata. Bucket — контейнер для об’єктів; ключ на кшталт <code>daily/report.tar</code> схожий на шлях, але не є звичайним каталогом Linux.</p><p>Це зручно для S3-сумісних клієнтів, артефактів і копій, які вже підготовлені backup-програмою. Це не SMB/NFS, не повна заміна сервісів AWS і не команда «зроби консистентний dump бази». Живу базу спочатку копіюють її штатним механізмом; завантаження відкритих database files саме по собі не робить їх придатними до відновлення.</p><h3>Що потрібно отримати</h3><p>Один native MinIO-процес під systemd, дані на виділеному mount, S3 API за HTTPS і окремий backup-користувач. Root потрібний для адміністрування, а не для щоденного job. Console й API мають різні порти: 9001 та 9000 відповідно.</p><h3>Як перевіряємо</h3><p>Перевірки йдуть від диска до сервісу, потім до API, ефективних прав і завантаженого назад файла. Це практичний посібник, а не опис зафіксованої аварії: наведені команди в цій інсталяції не виконувалися, поточний стан чужого сервера з них не випливає.</p><h3>Що вважаємо результатом</h3><p>Сервіс запускається лише з потрібним mount, клієнт читає й пише в дозволений bucket, не має admin-доступу, а завантажений назад об’єкт збігається з оригіналом. Для реального бекапу далі потрібний тест відновлення самого застосунку.</p><h2 id="section-2"><span>02</span>Спочатку стан самого MinIO</h2><p>На момент підготовки матеріалу офіційний репозиторій MinIO Community позначений як archived і no longer maintained; репозиторій mc також архівний. README сервера описує source-only distribution, а старі готові binaries — як такі, що більше не оновлюються. Це важливіше за зручність старої команди wget.</p><p>Нижче — відтворюваний лабораторний рецепт Community, з зафіксованими ревізіями й власною збіркою. Для нового production спершу визнач підтримуваний продукт або дистрибутив, модель оновлень і вимоги до доступності. Поточний README посилається на AIStor, але його ліцензія й умови — окрема перевірка, а не мовчазна заміна Community у цьому рецепті.</p><p><a href="https://github.com/minio/minio" rel="noopener noreferrer">Стан MinIO Community та дистрибуція ↗</a></p><p><a href="https://github.com/minio/mc" rel="noopener noreferrer">Стан MinIO Client ↗</a></p><h2 id="section-3"><span>03</span>Як усе з’єднано</h2><pre><code>S3-клієнт / backup job
+        │ HTTPS :443
+        ▼
+reverse proxy на тому самому хості
+        │ HTTP, тільки loopback
+        ▼
+MinIO API 127.0.0.1:9000 ──► /srv/minio/data
+
+Адміністратор ── SSH tunnel ──► Console 127.0.0.1:9001</code></pre><p>Приклад навмисно залишає backend на loopback. Якщо proxy живе в іншому контейнері чи на іншому хості, його 127.0.0.1 — інша машина або namespace: цей маршрут треба змінити явно й захистити. Прямі 9000/9001 в інтернет не відкриваємо.</p><p>Один вузол і один диск не дають HA. Дві папки на одному диску не додають незалежної копії. Versioning може допомогти від логічного перезапису, але не замінює іншу копію та політику захисту від видалення.</p><div class="verdict"><span>ЕКСПЕРТНИЙ ТОН. НЕЗРУЧНИЙ ВИСНОВОК</span><p>Працездатний MinIO — лише місце для об’єктів. Бекап з’являється разом із придатною копією даних, обмеженими правами, окремим зберіганням і перевіреним відновленням.</p></div><aside class="selfroast"><span>ПРИМІТКА НА ПОЛЯХ</span><p>Перший успішний upload теж робить мене оптимістом. Тому restore перевіряю до того, як назвати це бекапом: моє «усе збереглося» поки що працює без checksum.</p></aside><section class="practical" aria-label="Практичний блок"><h2 id="practical">Тепер корисне: розгортання на Debian</h2><p>Це нова лабораторна інсталяція з sudo, systemd та окремим mount <code>/srv/minio</code>. На чинному сервері спочатку звір unit, версії та шляхи; наведені файли не накладай поверх робочих. У всіх блоках заміни placeholders перед виконанням. Секрети створи в password manager або штатному secret manager; їхні значення не потрібні в shell history.</p><h3>1. Перевір диск і архітектуру</h3><p>На сервері, без змін:</p><pre><code>cat /etc/os-release
+uname -m
+findmnt --mountpoint /srv/minio
+df -hT /srv/minio
+df -i /srv/minio</code></pre><p>Потрібний саме очікуваний mount, достатній вільний простір та inodes. Якщо mount відсутній, спочатку налаштуй постійне монтування. Не створюй data directory на root filesystem замість диска: після наступного reboot це буде окремий, дуже творчий експеримент.</p><h3>2. Збери й зафіксуй артефакти</h3><p>На окремому Linux build-хості встанови git, CA certificates і Go версії, яку вимагає go.mod обраної ревізії. Архітектура результату має відповідати серверу. Передавання й перевірка походження артефактів — частина твого deployment-процесу.</p><p>У новому build-каталозі, не в наявному checkout:</p><pre><code>export MINIO_COMMIT=&#39;&lt;REVIEWED_40_CHAR_MINIO_COMMIT&gt;&#39;
+export MC_COMMIT=&#39;&lt;REVIEWED_40_CHAR_MC_COMMIT&gt;&#39;
+git clone https://github.com/minio/minio.git minio-src
+git -C minio-src checkout --detach &quot;$MINIO_COMMIT&quot;
+git -C minio-src rev-parse HEAD
+git clone https://github.com/minio/mc.git mc-src
+git -C mc-src checkout --detach &quot;$MC_COMMIT&quot;
+git -C mc-src rev-parse HEAD</code></pre><p>Звір обидва SHA з погодженими ревізіями. Після цього перевір go.mod і збирай; тут приклад для build-хоста тієї самої архітектури:</p><pre><code>mkdir -p artifacts
+(cd minio-src &amp;&amp; go build -o ../artifacts/minio .)
+(cd mc-src &amp;&amp; go build -o ../artifacts/mc .)
+./artifacts/minio --version
+./artifacts/mc --version
+(cd artifacts &amp;&amp; sha256sum minio mc &gt; SHA256SUMS)</code></pre><p>Ревізії та toolchain запиши в deployment manifest. Checksum поруч з артефактом виявляє пошкодження, але не доводить довіру до джерела. Збірка архівного коду не додає йому супроводу чи security fixes.</p><p>На сервері в каталозі отриманих і довірених артефактів:</p><pre><code>sha256sum -c SHA256SUMS &amp;&amp;
+  sudo install -m 0755 minio mc /usr/local/bin/</code></pre><h3>3. Підготуй користувача та нові каталоги</h3><p>Виконуй лише після підтвердження mount. Якщо користувач уже є, перевір його UID, home та групу замість повторного useradd. Існуючі data directory не перепризначай рекурсивним chown.</p><pre><code>sudo useradd --system --user-group --shell /usr/sbin/nologin \
+  --home-dir /var/lib/minio minio-user
+sudo install -d -o minio-user -g minio-user -m 0750 \
+  /var/lib/minio /srv/minio/data
+sudo install -d -o root -g root -m 0700 /etc/minio
+sudo install -o root -g root -m 0600 /dev/null /etc/minio/minio.env
+sudoedit /etc/minio/minio.env</code></pre><p>Останній install створює новий порожній файл; на наявному env його не запускай — він затре вміст. Заповнення файла й unit показане нижче. Root-пароль отримай із secret manager, не залишай placeholder і не публікуй файл. Permission 0600 не є шифруванням; root і процес сервісу все одно мають доступ до потрібних секретів.</p><h3>4. Запусти й перевір сервіс</h3><p>Після створення unit з наступного розділу:</p><pre><code>sudo systemd-analyze verify /etc/systemd/system/minio.service &amp;&amp;
+  sudo systemctl daemon-reload &amp;&amp;
+  sudo systemctl enable --now minio
+systemctl status minio --no-pager
+sudo journalctl -u minio -n 60 --no-pager
+sudo ss -lntp &#39;( sport = :9000 or sport = :9001 )&#39;</code></pre><p>Очікуй active, потрібний mount і listener лише на 127.0.0.1. Помилки журналу перевір локально; перед передаванням прибери credentials та впізнавані endpoints.</p><pre><code>curl --fail --silent --show-error --output /dev/null \
+  --write-out &#39;live: %{http_code}\n&#39; \
+  http://127.0.0.1:9000/minio/health/live
+curl --fail --silent --show-error --output /dev/null \
+  --write-out &#39;ready: %{http_code}\n&#39; \
+  http://127.0.0.1:9000/minio/health/ready</code></pre><p>HTTP 200 показує відповідь відповідного health endpoint. Він не перевіряє права backup job, наявність потрібних об’єктів або успішний restore.</p><p><a href="https://github.com/minio/minio/blob/master/docs/metrics/healthcheck/README.md" rel="noopener noreferrer">Health endpoints MinIO ↗</a></p><h2 id="section-4"><span>04</span>Як користуватися: bucket і окремий backup-користувач</h2><h3>1. Додай admin alias</h3><p>На сервері виконуй mc під окремим адміністративним Linux-користувачем. Команда запитає access key та приховано secret key в інтерактивному terminal; не передавай їх аргументами й не додавай --json або --debug до credential-команд.</p><pre><code>umask 077
+mc alias set minio-admin http://127.0.0.1:9000
+mc admin info minio-admin
+mc mb --ignore-existing minio-admin/backup</code></pre><p>mc зберігає ключі у своєму локальному config у home. Не додавай цей файл до Git чи незахищених копій. Для іншого хоста використовуй HTTPS endpoint із довіреним сертифікатом, а не відкритий HTTP. Успіх admin info перевіряє admin-доступ, ще не права майбутнього job.</p><p><a href="https://github.com/minio/mc/blob/master/cmd/alias-set.go" rel="noopener noreferrer">Інтерактивне введення mc alias set ↗</a></p><h3>2. Створи користувача й прикріпи policy</h3><p>Збережи JSON policy з наступного розділу як <code>backup-writer.json</code> на admin-хості. Створи нову окрему identity; при повторному виконанні user add не використовуй ім’я чинного користувача навмання — можна змінити його пароль.</p><pre><code>mc admin policy create minio-admin backup-writer backup-writer.json
+mc admin user add minio-admin</code></pre><p>В інтерактивних полях введи access key <code>backup-writer</code> і новий secret key із password manager. Збережи його там для job. Потім:</p><pre><code>mc admin policy attach minio-admin backup-writer --user backup-writer
+mc admin user info minio-admin backup-writer</code></pre><p>Policy дозволяє читання й запис об’єктів лише в backup bucket; видалення не дозволене. Це зменшує права, але PutObject усе одно дозволяє перезаписати відомий ключ. Не називай такий доступ immutable. Для backup-програми, якій потрібні prune, locks або інші дії, перевір її S3-вимоги й налаштуй окрему policy — ця не універсальна.</p><p><a href="https://github.com/minio/mc/blob/master/cmd/admin-user-add.go" rel="noopener noreferrer">Інтерактивне створення користувача ↗</a></p><h3>3. Перевір саме identity job</h3><p>На клієнтському хості з mc зафіксованої версії додай новий alias, ввівши ключі backup-writer. Підстав свій HTTPS endpoint; у лабораторії на самому сервері можна використати loopback URL.</p><pre><code>mc alias set backup-job https://s3.example.com
+mc ls backup-job/backup
+mc admin info backup-job</code></pre><p>List дозволеного bucket має працювати, admin info — завершитися AccessDenied. Несподіваний успіх admin-команди означає, що треба перевірити identity та всі її прямі й групові policies. Відмова на одному admin API ще не доводить відсутність усіх зайвих прав.</p><h3>4. Завантаж і поверни тестовий файл</h3><p>На клієнті створюється окремий локальний каталог і унікальний object key. Цей тест не перезаписує існуючий backup:</p><pre><code>CHECK_DIR=&quot;$(mktemp -d)&quot;
+OBJECT_KEY=&quot;checks/$(date -u +%Y%m%dT%H%M%SZ)-$(basename &quot;$CHECK_DIR&quot;).txt&quot;
+printf &#39;restore check\n&#39; &gt; &quot;$CHECK_DIR/source.txt&quot;
+mc cp &quot;$CHECK_DIR/source.txt&quot; &quot;backup-job/backup/$OBJECT_KEY&quot; &amp;&amp;
+  mc cp &quot;backup-job/backup/$OBJECT_KEY&quot; &quot;$CHECK_DIR/restored.txt&quot; &amp;&amp;
+  cmp &quot;$CHECK_DIR/source.txt&quot; &quot;$CHECK_DIR/restored.txt&quot;</code></pre><p>cmp без виводу з exit code 0 означає однаковий вміст. Тестовий об’єкт залишається в bucket: cleanup виконує адміністратор за точним ключем, бо job не має DeleteObject. Для реального бекапу повтори перевірку з архівом та відновленням застосунку в ізольованому середовищі.</p><h3>5. Копіюй лише підготовлені дані</h3><p>Для статичного, вже підготовленого каталогу спочатку подивись план mirror:</p><pre><code>export BACKUP_SOURCE=&#39;&lt;PREPARED_BACKUP_DIRECTORY&gt;&#39;
+mc mirror --dry-run &quot;$BACKUP_SOURCE/&quot; backup-job/backup/snapshots/run-001/</code></pre><p>Після перевірки списку виконай копіювання в новий prefix:</p><pre><code>mc mirror &quot;$BACKUP_SOURCE/&quot; backup-job/backup/snapshots/run-001/</code></pre><p><code>run-001</code> — приклад нового ідентифікатора запуску. Наступного разу використовуй новий prefix. Не додавай автоматично --overwrite або --remove. Не копіюй усі приховані каталоги home за принципом «зайве не завадить»: там живуть клієнтські credentials. Mirror не зберігає весь стан POSIX filesystem як системний backup; потрібні metadata й консистентність забезпечує обраний backup-інструмент.</p><p><a href="https://github.com/minio/mc/blob/master/cmd/mirror-main.go" rel="noopener noreferrer">mc mirror: прапорці та режим dry-run ↗</a></p><h2 id="section-5"><span>05</span>Конфігурація сервера</h2><h3>Env-файл /etc/minio/minio.env</h3><p>Повний мінімальний файл для цього unit. Значення нижче — placeholders: заміни їх секретами зі сховища до запуску. Не source цей файл у shell; його читає systemd.</p><pre><code>MINIO_ROOT_USER=&lt;MINIO_ADMIN_ACCESS_KEY&gt;
+MINIO_ROOT_PASSWORD=&lt;MINIO_ADMIN_SECRET_KEY&gt;</code></pre><p>При використанні довільних спецсимволів врахуй синтаксис EnvironmentFile; безпечніше доручити render штатному secret-management механізму. Файл належить root:root із mode 0600. Не друкуй його для «швидкої перевірки».</p><p><a href="https://github.com/minio/minio/blob/master/docs/config/README.md" rel="noopener noreferrer">Змінні root-конфігурації MinIO ↗</a></p><h3>Unit /etc/systemd/system/minio.service</h3><p>Повний приклад для виділеного mount <code>/srv/minio</code>; створи файл через sudoedit. Якщо mount або data path інші, узгодь усі відповідні рядки. Unit не форматує диск і не виконує міграцію даних.</p><pre><code>[Unit]
+Description=MinIO single-node object storage
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/minio
+
+[Service]
+Type=simple
+User=minio-user
+Group=minio-user
+Environment=HOME=/var/lib/minio
+EnvironmentFile=/etc/minio/minio.env
+WorkingDirectory=/var/lib/minio
+ExecStartPre=/usr/bin/mountpoint -q /srv/minio
+ExecStart=/usr/local/bin/minio server --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 /srv/minio/data
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=300
+LimitNOFILE=65536
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/minio/data /var/lib/minio
+
+[Install]
+WantedBy=multi-user.target</code></pre><p>ExecStartPre зупиняє старт без mount, щоб сервіс не писав на root filesystem. Шляхи mountpoint і systemd-директиви звір на цільовій ОС. TimeoutStopSec і file limit — початкові значення прикладу, які треба узгодити з навантаженням; restart на single-node означає перерву доступності.</p><h3>HTTPS для S3 API</h3><p>Фрагмент Caddyfile для вже встановленого Caddy на тому самому хості. DNS, ACME validation і firewall мають бути налаштовані окремо. Додай site block до чинного файла, не затирай інші virtual hosts:</p><pre><code>s3.example.com {
+    reverse_proxy 127.0.0.1:9000
+}</code></pre><p>S3 endpoint розміщується в корені домену. Не обрізай path і не переписуй підписаний Host: це впливає на Signature V4. API й Console не міняють місцями. Зовні достатньо дозволеного HTTPS до proxy; console залишена для адміністративного tunnel.</p><pre><code>sudo caddy validate --config /etc/caddy/Caddyfile &amp;&amp;
+  sudo systemctl reload caddy
+curl --fail --silent --show-error --output /dev/null \
+  --write-out &#39;https live: %{http_code}\n&#39; \
+  https://s3.example.com/minio/health/live</code></pre><p>Не використовуй -k як фікс TLS. Це перевірка маршруту й сертифіката, не перевірка S3-прав.</p><p><a href="https://caddyserver.com/docs/caddyfile/directives/reverse_proxy" rel="noopener noreferrer">Reverse proxy Caddy: headers і rewrites ↗</a></p><p>Для Console з робочої станції, якщо локальний порт вільний:</p><pre><code>ssh -N -L 9001:127.0.0.1:9001 &#39;&lt;SSH_USER&gt;@&lt;MINIO_HOST&gt;&#39;</code></pre><p>Поки tunnel працює, відкрий <code>http://127.0.0.1:9001</code>. Не перетворюй доступ адміністратора на загальний публічний console endpoint. Зупинка SSH завершує tunnel.</p><h3>Policy backup-writer.json</h3><p>Це policy для звичайних object PUT/GET та multipart upload у одному bucket. Без DeleteObject, admin-доступу й переліку всіх buckets. JSON не містить ключів доступу.</p><pre><code>{
+  &quot;Version&quot;: &quot;2012-10-17&quot;,
+  &quot;Statement&quot;: [
+    {
+      &quot;Effect&quot;: &quot;Allow&quot;,
+      &quot;Action&quot;: [
+        &quot;s3:GetBucketLocation&quot;,
+        &quot;s3:ListBucket&quot;,
+        &quot;s3:ListBucketMultipartUploads&quot;
+      ],
+      &quot;Resource&quot;: [&quot;arn:aws:s3:::backup&quot;]
+    },
+    {
+      &quot;Effect&quot;: &quot;Allow&quot;,
+      &quot;Action&quot;: [
+        &quot;s3:GetObject&quot;,
+        &quot;s3:PutObject&quot;,
+        &quot;s3:AbortMultipartUpload&quot;,
+        &quot;s3:ListMultipartUploadParts&quot;
+      ],
+      &quot;Resource&quot;: [&quot;arn:aws:s3:::backup/*&quot;]
+    }
+  ]
+}</code></pre><h2 id="section-6"><span>06</span>Якщо не працює</h2><h3>Сервіс не стартує</h3><p>Почни з журналу й шляху, без restart по колу:</p><pre><code>systemctl status minio --no-pager
+sudo journalctl -u minio -n 100 --no-pager
+findmnt --mountpoint /srv/minio
+namei -l /srv/minio/data
+sudo -u minio-user test -w /srv/minio/data</code></pre><p>Якщо ExecStartPre завершується невдало, перевір mount. Permission denied перевіряй для всіх батьківських каталогів і обмежень unit; не лікуй chmod 777. test -w не перевіряє фактичний запис чи здоров’я диска. Помилка формату даних потребує окремого плану сумісності — не видаляй data directory для «чистого старту».</p><h3>Console відкривається, S3-клієнт отримує HTML</h3><p>Перевір, що alias веде на API :9000 або його HTTPS proxy, а не Console :9001. HTTP 200 від сторінки login не є успіхом S3. Звір DNS і маршрут proxy до виправлення ключів.</p><h3>AccessDenied</h3><p>На admin-хості звір конкретного користувача й policy:</p><pre><code>mc admin user info minio-admin backup-writer
+mc admin policy info minio-admin backup-writer</code></pre><p>На job-хості перевір дозволений <code>backup-job/backup</code>, а не <code>mc ls backup-job</code>: останній може вимагати переліку всіх buckets, якого тут немає. Для KMS, retention або backup-програми з lock/prune потрібні додатково обґрунтовані дозволи. Не перемикай job на root, щоб сховати причину.</p><h3>SignatureDoesNotMatch або помилка TLS</h3><p>Перевір URL, час і маршрут. На сервері:</p><pre><code>timedatectl status
+sudo ss -lntp &#39;( sport = :9000 or sport = :9001 )&#39;</code></pre><p>На клієнті звір час і довіру до сертифіката. Далі перевір secret key, підписаний Host та path у proxy. Не відключай перевірку TLS й не вставляй credentials у debug-звіт.</p><h3>Місце закінчується, хоча файлів начебто мало</h3><p>Порівняй filesystem, поточні об’єкти та незавершені multipart uploads:</p><pre><code>df -hT /srv/minio
+df -i /srv/minio
+mc du --recursive minio-admin/backup
+mc ls --incomplete --recursive minio-admin/backup</code></pre><p>Якщо ввімкнене versioning, окремо врахуй старі версії й delete markers. Список incomplete не означає, що їх можна масово прибрати: спочатку виключи активні uploads. Не видаляй вручну файли з backend-каталогу MinIO.</p><h2 id="section-7"><span>07</span>Зміна, перевірка й повернення</h2><h3>Було: API слухає всі інтерфейси</h3><p>Фрагмент параметрів запуску, а не опис зафіксованого інциденту:</p><pre><code>--address :9000 --console-address :9001</code></pre><h3>Стало: proxy і tunnel на тому самому хості</h3><pre><code>--address 127.0.0.1:9000 --console-address 127.0.0.1:9001</code></pre><p>Перед такою зміною переведи клієнтів на перевірений HTTPS proxy: прямі LAN-клієнти втратять доступ. Збережи чинний unit, env і бінарний артефакт у захищеній backup-системі. Після зміни в погоджене вікно:</p><pre><code>sudo systemd-analyze verify /etc/systemd/system/minio.service &amp;&amp;
+  sudo systemctl daemon-reload &amp;&amp;
+  sudo systemctl restart minio
+sudo ss -lntp &#39;( sport = :9000 or sport = :9001 )&#39;</code></pre><p>Повтори health, API upload/download і перевірку identity job. Для повернення мережевої зміни віднови попередній перевірений unit, виконай daemon-reload і restart; звір firewall перед відновленням широкого listener. Не запускай цей рецепт як автоматичний downgrade MinIO: старий binary може не читати змінений формат даних.</p><p>Повернення unit не повертає перезаписані об’єкти. Для даних потрібна незалежна копія й перевірений restore. Саме цей момент я раніше за всіх хочу оголосити «очевидним» — тому й залишаю його в плані перевірки.</p></section><div class="scope-note"><b>Про цей розбір</b><p>Розбір ілюструє типову ситуацію. Для висновків про власний сервер потрібні його журнали, конфігурація та версії.</p></div></article></div><section class="related"><p class="eyebrow">ІНШІ СПОСОБИ ОРГАНІЗУВАТИ СОБІ ВЕЧІР</p><a href="/articles/pod-readiness.html"><span>01 / Kubernetes</span><h2>Pod зелений. Це ви якісь неготові.</h2><b>↗</b></a><a href="/articles/container-data.html"><span>03 / Docker</span><h2>Дані зникли. Зате контейнер чистенький.</h2><b>↗</b></a></section></main><footer><a class="brand" href="/">ops<span>!</span>notes</a><p>Ви вчіться. Я вже знаю.<br>Теоретично — бездоганно.</p><a href="#top">До початку ↑</a><span>КЕЙСИ ТА ТЕХНІЧНІ РОЗБОРИ · БЕЗ МАТЮКІВ</span></footer></body></html>
