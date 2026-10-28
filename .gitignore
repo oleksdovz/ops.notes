@@ -1,0 +1,26 @@
+# Local artifacts and scratch files
+/work/
+/outputs/
+
+# Dependencies and caches
+node_modules/
+.cache/
+.npm/
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.log
+
+# Editor and OS files
+.DS_Store
+._*
+.idea/
+*.swp
+*.swo
+*~
+
+# dist/ contains source assets (app.js and style.css).
+# Keep dist/, .openai/hosting.json and tools/sites/ versioned.
