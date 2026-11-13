@@ -4,16 +4,50 @@ on:
   workflow_dispatch:
 
 jobs:
-  runner-preflight:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify runner can reach the deployment host
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build and verify static site
         run: |
           set -eu
           node --version
-          python3 - <<'PY'
-          import socket
-          host, port = "192.168.0.50", 22
-          with socket.create_connection((host, port), timeout=5):
-              print(f"Runner can reach {host}:{port}")
-          PY
+          node scripts/build.mjs
+          test -s dist/index.html
+          test -s dist/about.html
+          test -d dist/articles
+          test -s dist/articles/container-data.html
+
+      - name: Deploy over restricted SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEVOPS_BLOG_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          key="$RUNNER_TEMP/devops-blog-deploy-key"
+          known_hosts="$RUNNER_TEMP/devops-blog-known-hosts"
+          trap 'rm -f "$key" "$known_hosts"' EXIT
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          unset DEPLOY_KEY
+          printf '%s\n' '192.168.0.50 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIALhHHpRL2GjH8WRH0FC6SxpwJ2x9Q8rcGo8cQUvQ6U root@site-hermes' > "$known_hosts"
+          tar --create --gzip --file=- --directory=dist . | ssh -T \
+            -i "$key" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            -o KbdInteractiveAuthentication=no \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts" \
+            -o ConnectTimeout=8 \
+            site-deploy@192.168.0.50
+
+      - name: Verify deployment from runner
+        run: |
+          set -eu
+          curl --fail --silent --show-error --max-time 10 http://192.168.0.50:81/ -o /dev/null
+          curl --fail --silent --show-error --max-time 10 http://192.168.0.50:81/about.html -o /dev/null
+          curl --fail --silent --show-error --max-time 10 http://192.168.0.50:81/articles/container-data.html -o /dev/null
+          echo 'Homepage, about page, and article returned HTTP 200.'
