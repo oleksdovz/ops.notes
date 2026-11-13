@@ -1,0 +1,19 @@
+name: Deploy DevOps Blog to port 81
+
+on:
+  workflow_dispatch:
+
+jobs:
+  runner-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify runner can reach the deployment host
+        run: |
+          set -eu
+          node --version
+          python3 - <<'PY'
+          import socket
+          host, port = "192.168.0.50", 22
+          with socket.create_connection((host, port), timeout=5):
+              print(f"Runner can reach {host}:{port}")
+          PY
