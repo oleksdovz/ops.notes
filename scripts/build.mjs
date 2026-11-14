@@ -14,3 +14,4 @@ fs.writeFileSync('dist/about.html',head('Правила прожарки','Са�
 console.log('Built '+posts.length+' articles; '+posts.filter(p=>p.kind==='history').length+' based on saved history.');
 
 for(const [oldSlug,newSlug] of Object.entries({'2fauth-directory-permissions':'directory-access','traefik-missing-claim':'missing-storage-claim'})){const target='/articles/'+newSlug+'.html';fs.writeFileSync('dist/articles/'+oldSlug+'.html',`<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${target}"><meta name="robots" content="noindex"><link rel="canonical" href="${target}"><title>Перенаправлення</title></head><body><a href="${target}">Перейти до анонімізованого кейсу</a></body></html>`)}
+
