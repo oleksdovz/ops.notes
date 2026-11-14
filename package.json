@@ -1,0 +1,10 @@
+{
+  "name": "ops-notes-devops-journal",
+  "private": true,
+  "engines": {
+    "node": "22.16.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  }
+}

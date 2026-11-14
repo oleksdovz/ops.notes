@@ -42,3 +42,16 @@ selfroast: Самоіронічна репліка редакційного пе
 ## Публікація
 
 Збірка створює локальні файли. Для Sites потрібні синхронізація Git через Sites workflow, пакування та deploy. Автоматичний CI/CD у цьому проєкті не налаштований. `.openai/hosting.json` зберігає прив’язку до чинного сайту. Не змінюй project_id.
+
+### Готовність до Cloudflare Pages
+
+Чинний деплой — через Sites; Cloudflare Pages поки лише погоджений майбутній напрям. Репозиторій підготовлений для нього, якщо напрям підтвердять:
+
+- Root repo: `/`
+- Build command: `node scripts/build.mjs` (або `npm run build`)
+- Output directory: `dist`
+- Node.js: зафіксовано у `.node-version` і `package.json` → `engines.node` (22.16.0, LTS за замовчуванням для build image Cloudflare Pages)
+
+Збірка також генерує `dist/404.html` (Cloudflare Pages підбирає його автоматично для будь-якого невідомого шляху) та `dist/_redirects` (301 для перейменованих slug, формат Cloudflare/Netlify; старі `dist/articles/<old-slug>.html` лишаються як portable meta-refresh fallback для інших хостингів). Внутрішні посилання сайту завжди з явним `.html` або кореневим `/`; extensionless-доступ (`/articles/slug` без `.html`) не підтримується і не потрібен для навігації сайтом.
+
+Підключення Cloudflare-проєкту, DNS і приватність — поза цим репозиторієм; виконується лише за явним дорученням.
