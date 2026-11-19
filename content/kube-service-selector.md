@@ -21,6 +21,8 @@ Service знаходить Pod за selector і labels, а не за схожи�
 
 Pod запущені, Service існує, але запити через нього не проходять. Після зміни міток у шаблоні Pod selector Service лишився старим.
 
+Service тут не вгадує за назвою — він чесно застосовує selector. Якщо labels змінили, а selector забули, нуль endpoints — не Kubernetes-містика, а пропущена перевірка контракту між об’єктами; «майже однакові» назви — хуйня замість конфіга.
+
 ### Як розбиралися
 
 Перевіряємо selector Service та фактичні labels Pod у тому самому namespace. Потім дивимося EndpointSlice — об’єкти з адресами backend-ів для Service. У цій історії selector не знаходить потрібні Pod.
